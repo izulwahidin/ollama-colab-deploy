@@ -54,8 +54,52 @@ def prepare_dependencies():
             sys.exit(1)
 
 
+def pull_model_with_progress():
+    """Streams pull requests from Ollama's local API endpoint to draw a live progress bar."""
+    print(f"-> Downloading {MODEL_NAME} via streaming API...")
+    url = f"http://localhost:{OLLAMA_PORT}/api/pull"
+    data = json.dumps({"name": MODEL_NAME, "stream": True}).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            for line in response:
+                if not line:
+                    continue
+                
+                status_data = json.loads(line.decode("utf-8"))
+                status = status_data.get("status", "")
+                
+                # Check if we have total and completed byte fields
+                total = status_data.get("total", 0)
+                completed = status_data.get("completed", 0)
+                
+                if total > 0:
+                    percent = (completed / total) * 100
+                    filled_length = int(40 * completed // total)
+                    # Create a classic console progress bar [████████░░░░░░░░]
+                    bar = "█" * filled_length + "░" * (40 - filled_length)
+                    
+                    # Human readable sizes
+                    completed_gb = completed / (1024**3)
+                    total_gb = total / (1024**3)
+                    
+                    # Print progress line dynamically using carriage return (\r)
+                    sys.stdout.write(f"\r   [{bar}] {percent:.1f}% ({completed_gb:.2f}/{total_gb:.2f} GB) - {status}")
+                    sys.stdout.flush()
+                else:
+                    # Fallback for states without byte metrics (e.g., 'verifying sha256')
+                    sys.stdout.write(f"\r   -> {status}...{' ' * 30}")
+                    sys.stdout.flush()
+            print("\n✅ Model download complete.")
+    except Exception as e:
+        print(f"\n❌ Failed to communicate with Ollama API for pulling: {e}")
+        sys.exit(1)
+
+
 def pull_model_if_missing():
-    """Checks if the LLM model is already downloaded. If not, pulls it."""
+    """Checks if the LLM model is already downloaded. If not, pulls it with status reporting."""
     print(f"[2/4] Managing target LLM model ({MODEL_NAME})...")
     
     try:
@@ -66,7 +110,7 @@ def pull_model_if_missing():
     except subprocess.CalledProcessError:
         print("⚠️ Warning: Could not verify installed models list. Defaulting to pull check...")
 
-    run_system_command([OLLAMA_EXECUTABLE_PATH, "pull", MODEL_NAME], f"Downloading {MODEL_NAME} (~9GB)")
+    pull_model_with_progress()
 
 
 def setup_cloudflared():
@@ -106,7 +150,7 @@ def main():
     )
     time.sleep(4)  # Give server a moment to bind to the port
 
-    # 2. Model Pulling (Conditional)
+    # 2. Model Pulling (Conditional with dynamic progress bar)
     pull_model_if_missing()
 
     # 3. Tunnel Deployment (Conditional Download)
