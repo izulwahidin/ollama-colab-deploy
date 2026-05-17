@@ -8,7 +8,7 @@ import sys
 import shutil
 
 # --- CONFIGURATION ---
-MODEL_NAME = "qwen2.5-coder:14b"
+MODEL_NAME = "qwen3-coder-next:latest"
 OLLAMA_PORT = "11434"
 OLLAMA_HOST = f"0.0.0.0:{OLLAMA_PORT}"
 OLLAMA_EXECUTABLE_PATH = "/usr/local/bin/ollama"
