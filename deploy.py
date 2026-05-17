@@ -8,7 +8,7 @@ import sys
 import shutil
 
 # --- CONFIGURATION ---
-MODEL_NAME = "qwen3-coder-next:latest"
+MODEL_NAME = "qwen2.5-coder:14b"  # Your primary targeted model
 OLLAMA_PORT = "11434"
 OLLAMA_HOST = f"0.0.0.0:{OLLAMA_PORT}"
 OLLAMA_EXECUTABLE_PATH = "/usr/local/bin/ollama"
@@ -31,7 +31,7 @@ def run_system_command(command, description=None):
 
 def prepare_dependencies():
     """Checks and installs system-level requirements only if missing."""
-    print("[1/4] Checking and initializing system dependencies...")
+    print("[1/5] Checking and initializing system dependencies...")
 
     # 1. Check for 'zstd'
     if shutil.which("zstd"):
@@ -100,7 +100,7 @@ def pull_model_with_progress():
 
 def pull_model_if_missing():
     """Checks if the LLM model is already downloaded. If not, pulls it with status reporting."""
-    print(f"[2/4] Managing target LLM model ({MODEL_NAME})...")
+    print(f"[2/5] Managing target LLM model ({MODEL_NAME})...")
     
     try:
         result = subprocess.run([OLLAMA_EXECUTABLE_PATH, "list"], capture_output=True, text=True, check=True)
@@ -115,7 +115,7 @@ def pull_model_if_missing():
 
 def setup_cloudflared():
     """Checks for cloudflared binary locally, downloads only if missing."""
-    print("[3/4] Deploying secure tunnel gateway...")
+    print("[3/5] Deploying secure tunnel gateway...")
     
     if os.path.exists(CLOUDFLARED_PATH) and os.access(CLOUDFLARED_PATH, os.X_OK):
         print("✅ Valid local 'cloudflared' binary found. Skipping download.")
@@ -129,6 +129,76 @@ def setup_cloudflared():
     except Exception as e:
         print(f"❌ Failed to download cloudflared: {e}")
         sys.exit(1)
+
+
+def generate_opencode_config(public_url):
+    """Generates the opencode.json configuration file dynamically by querying /v1/models."""
+    print("[5/5] Mapping live local models and writing config...")
+    
+    models_dict = {}
+    fallback_model_id = None
+
+    # Fetch live pulled models from the local OpenAI-compatible endpoint
+    try:
+        models_url = f"http://localhost:{OLLAMA_PORT}/v1/models"
+        with urllib.request.urlopen(models_url) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            
+            # Formulate the model data structure dynamically from active models
+            for model_obj in data.get("data", []):
+                model_id = model_obj.get("id")
+                if not model_id:
+                    continue
+                
+                if not fallback_model_id:
+                    fallback_model_id = model_id  # Use first discovered model as target fallback
+
+                # Format a clean string display name (e.g. "qwen2.5-coder:14b" -> "Qwen2.5 Coder 14b")
+                base_name = model_id.split(':')[0]
+                tag = f" {model_id.split(':')[1]}" if ':' in model_id and model_id.split(':')[1] != 'latest' else ""
+                clean_name = " ".join([w.capitalize() for w in base_name.replace('-', ' ').replace('_', ' ').split()])
+                
+                models_dict[model_id] = {
+                    "name": f"{clean_name}{tag.capitalize()}"
+                }
+    except Exception as e:
+        print(f"⚠️ Warning: Could not fetch from /v1/models ({e}). Using configuration fallbacks.")
+        
+    # Fallback to local configuration parameters if endpoint query failed entirely
+    if not models_dict:
+        fallback_model_id = MODEL_NAME
+        models_dict = {
+            MODEL_NAME: {
+                "name": " ".join([w.capitalize() for w in MODEL_NAME.split(':')[0].replace('-', ' ').split()])
+            }
+        }
+
+    # Decide preferred target model selection rule
+    chosen_model = MODEL_NAME if MODEL_NAME in models_dict else fallback_model_id
+
+    config_data = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "ollama": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Ollama via Cloudflare",
+                "options": {
+                    "baseURL": f"{public_url}/v1",
+                    "apiKey": "ollama"
+                },
+                "models": models_dict
+            }
+        },
+        "model": f"ollama/{chosen_model}"
+    }
+    
+    try:
+        file_path = "opencode.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4)
+        print(f"✅ Generated config at: {os.path.abspath(file_path)}")
+    except Exception as e:
+        print(f"❌ Failed to write opencode.json: {e}")
 
 
 def main():
@@ -157,6 +227,7 @@ def main():
     setup_cloudflared()
 
     # 4. Tunnel Execution
+    print("[4/5] Establishing secure tunnel connectivity...")
     public_url = None
     max_retries = 5
     tunnel_proc = None
@@ -196,6 +267,9 @@ def main():
             print("\n--- Last Cloudflare Tunnel Logs ---")
             print("\n".join(cloudflared_output[-20:]))
             sys.exit(1)
+
+        # 5. Generate Opencode Configuration via live /v1/models mapping
+        generate_opencode_config(public_url)
 
         print("\nPress Ctrl+C to shut down the server and close the tunnel.")
         while True:
