@@ -9,11 +9,13 @@ import shutil
 
 # --- CONFIGURATION ---
 MODEL_NAME = "qwen2.5-coder:14b"  # Your primary targeted model
+MODEL_NAME_WITH_CTX = f"{MODEL_NAME.split(':')[0]}:14b-16k"  # Model variant with extended context
 OLLAMA_PORT = "11434"
 OLLAMA_HOST = f"0.0.0.0:{OLLAMA_PORT}"
 OLLAMA_EXECUTABLE_PATH = "/usr/local/bin/ollama"
 CLOUDFLARED_URL = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
 CLOUDFLARED_PATH = "./cloudflared"
+CONTEXT_WINDOW = 16384  # Extended context for agentic tools support
 
 
 def run_system_command(command, description=None):
@@ -98,19 +100,68 @@ def pull_model_with_progress():
         sys.exit(1)
 
 
-def pull_model_if_missing():
-    """Checks if the LLM model is already downloaded. If not, pulls it with status reporting."""
-    print(f"[2/5] Managing target LLM model ({MODEL_NAME})...")
+def setup_model_context_window():
+    """
+    Sets up extended context window for agentic tools support.
+    This is critical: Ollama defaults to 4096 context even if models support more.
+    We create a variant with num_ctx=16384 for proper tool usage.
+    """
+    print("[2/5] Configuring model context window for agentic tools...")
     
+    # First, check if the base model is already pulled
     try:
         result = subprocess.run([OLLAMA_EXECUTABLE_PATH, "list"], capture_output=True, text=True, check=True)
-        if MODEL_NAME in result.stdout:
-            print(f"✅ Model '{MODEL_NAME}' is already downloaded.")
+        if MODEL_NAME not in result.stdout:
+            print(f"-> Base model '{MODEL_NAME}' not found. Pulling...")
+            pull_model_with_progress()
+    except subprocess.CalledProcessError:
+        print("⚠️ Warning: Could not verify installed models. Attempting to pull...")
+        pull_model_with_progress()
+
+    # Check if the extended context variant already exists
+    try:
+        result = subprocess.run([OLLAMA_EXECUTABLE_PATH, "list"], capture_output=True, text=True, check=True)
+        if MODEL_NAME_WITH_CTX in result.stdout:
+            print(f"✅ Model '{MODEL_NAME_WITH_CTX}' with extended context already configured.")
             return
     except subprocess.CalledProcessError:
-        print("⚠️ Warning: Could not verify installed models list. Defaulting to pull check...")
+        pass
 
-    pull_model_with_progress()
+    # Create extended context variant using interactive Ollama REPL
+    print(f"-> Creating '{MODEL_NAME_WITH_CTX}' with num_ctx={CONTEXT_WINDOW}...")
+    
+    ollama_commands = f"/set parameter num_ctx {CONTEXT_WINDOW}\n/save {MODEL_NAME_WITH_CTX}\n/bye\n"
+    
+    try:
+        process = subprocess.Popen(
+            [OLLAMA_EXECUTABLE_PATH, "run", MODEL_NAME],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=ollama_commands, timeout=120)
+        
+        if process.returncode == 0 or "Created new model" in stdout:
+            print(f"✅ Successfully created model variant '{MODEL_NAME_WITH_CTX}'")
+            return MODEL_NAME_WITH_CTX
+        else:
+            print(f"⚠️ Warning: Could not create extended context variant. Using base model.")
+            print(f"   Output: {stdout}")
+            return MODEL_NAME
+    except subprocess.TimeoutExpired:
+        print(f"⚠️ Warning: Context window setup timed out. Using base model.")
+        process.kill()
+        return MODEL_NAME
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to configure context window: {e}")
+        return MODEL_NAME
+
+
+def pull_model_if_missing():
+    """Checks if the LLM model is already downloaded. If not, pulls it with status reporting."""
+    # This is now handled by setup_model_context_window()
+    pass
 
 
 def setup_cloudflared():
@@ -131,72 +182,39 @@ def setup_cloudflared():
         sys.exit(1)
 
 
-def generate_opencode_config(public_url):
-    """Generates the opencode.json configuration file dynamically by querying /v1/models."""
-    print("[5/5] Mapping live local models and writing config...")
+def generate_opencode_config(public_url, effective_model):
+    """
+    Generates the opencode.json configuration file following p-lemonish reference.
+    Minimal, clean config with tools enabled for extended-context models.
     
-    models_dict = {}
-    fallback_model_id = None
-
-    # Fetch live pulled models from the local OpenAI-compatible endpoint
-    try:
-        models_url = f"http://localhost:{OLLAMA_PORT}/v1/models"
-        with urllib.request.urlopen(models_url) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            
-            # Formulate the model data structure dynamically from active models
-            for model_obj in data.get("data", []):
-                model_id = model_obj.get("id")
-                if not model_id:
-                    continue
-                
-                if not fallback_model_id:
-                    fallback_model_id = model_id  # Use first discovered model as target fallback
-
-                # Format a clean string display name (e.g. "qwen2.5-coder:14b" -> "Qwen2.5 Coder 14b")
-                base_name = model_id.split(':')[0]
-                tag = f" {model_id.split(':')[1]}" if ':' in model_id and model_id.split(':')[1] != 'latest' else ""
-                clean_name = " ".join([w.capitalize() for w in base_name.replace('-', ' ').replace('_', ' ').split()])
-                
-                models_dict[model_id] = {
-                    "name": f"{clean_name}{tag.capitalize()}"
-                }
-    except Exception as e:
-        print(f"⚠️ Warning: Could not fetch from /v1/models ({e}). Using configuration fallbacks.")
-        
-    # Fallback to local configuration parameters if endpoint query failed entirely
-    if not models_dict:
-        fallback_model_id = MODEL_NAME
-        models_dict = {
-            MODEL_NAME: {
-                "name": " ".join([w.capitalize() for w in MODEL_NAME.split(':')[0].replace('-', ' ').split()])
-            }
-        }
-
-    # Decide preferred target model selection rule
-    chosen_model = MODEL_NAME if MODEL_NAME in models_dict else fallback_model_id
-
+    Reference: https://github.com/p-lemonish/ollama-x-opencode
+    """
+    print("[5/5] Generating OpenCode configuration...")
+    
+    # Clean config format (matching p-lemonish reference)
     config_data = {
         "$schema": "https://opencode.ai/config.json",
         "provider": {
             "ollama": {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "Ollama via Cloudflare",
                 "options": {
-                    "baseURL": f"{public_url}/v1",
-                    "apiKey": "ollama"
+                    "baseURL": f"{public_url}/v1"
                 },
-                "models": models_dict
+                "models": {
+                    effective_model: {
+                        "tools": True
+                    }
+                }
             }
-        },
-        "model": f"ollama/{chosen_model}"
+        }
     }
     
     try:
         file_path = "opencode.json"
         with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=4)
+            json.dump(config_data, f, indent=2)
         print(f"✅ Generated config at: {os.path.abspath(file_path)}")
+        print(f"   📌 Primary model: {effective_model} (with agentic tools enabled)")
     except Exception as e:
         print(f"❌ Failed to write opencode.json: {e}")
 
@@ -220,8 +238,8 @@ def main():
     )
     time.sleep(4)  # Give server a moment to bind to the port
 
-    # 2. Model Pulling (Conditional with dynamic progress bar)
-    pull_model_if_missing()
+    # 2. Model Setup with Context Window Configuration (KEY FIX!)
+    effective_model = setup_model_context_window()
 
     # 3. Tunnel Deployment (Conditional Download)
     setup_cloudflared()
@@ -268,9 +286,12 @@ def main():
             print("\n".join(cloudflared_output[-20:]))
             sys.exit(1)
 
-        # 5. Generate Opencode Configuration via live /v1/models mapping
-        generate_opencode_config(public_url)
+        # 5. Generate Opencode Configuration with tools support
+        generate_opencode_config(public_url, effective_model)
 
+        print("\n" + "="*60)
+        print("✨ Setup Complete! You're ready to use agentic tools.")
+        print("="*60)
         print("\nPress Ctrl+C to shut down the server and close the tunnel.")
         while True:
             time.sleep(1)
