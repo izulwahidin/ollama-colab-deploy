@@ -8,7 +8,7 @@ import sys
 import shutil
 
 # --- CONFIGURATION ---
-MODEL_NAME = "qwen2.5-coder:14b"  # Your primary targeted model
+MODEL_NAME = "qwen3.6:27b"  # Your primary targeted model
 MODEL_NAME_WITH_CTX = f"{MODEL_NAME.split(':')[0]}:14b-16k"  # Model variant with extended context
 OLLAMA_PORT = "11434"
 OLLAMA_HOST = f"0.0.0.0:{OLLAMA_PORT}"
@@ -61,32 +61,32 @@ def pull_model_with_progress():
     print(f"-> Downloading {MODEL_NAME} via streaming API...")
     url = f"http://localhost:{OLLAMA_PORT}/api/pull"
     data = json.dumps({"name": MODEL_NAME, "stream": True}).encode("utf-8")
-    
+
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    
+
     try:
         with urllib.request.urlopen(req) as response:
             for line in response:
                 if not line:
                     continue
-                
+
                 status_data = json.loads(line.decode("utf-8"))
                 status = status_data.get("status", "")
-                
+
                 # Check if we have total and completed byte fields
                 total = status_data.get("total", 0)
                 completed = status_data.get("completed", 0)
-                
+
                 if total > 0:
                     percent = (completed / total) * 100
                     filled_length = int(40 * completed // total)
                     # Create a classic console progress bar [████████░░░░░░░░]
                     bar = "█" * filled_length + "░" * (40 - filled_length)
-                    
+
                     # Human readable sizes
                     completed_gb = completed / (1024**3)
                     total_gb = total / (1024**3)
-                    
+
                     # Print progress line dynamically using carriage return (\r)
                     sys.stdout.write(f"\r   [{bar}] {percent:.1f}% ({completed_gb:.2f}/{total_gb:.2f} GB) - {status}")
                     sys.stdout.flush()
@@ -107,7 +107,7 @@ def setup_model_context_window():
     We create a variant with num_ctx=16384 for proper tool usage.
     """
     print("[2/5] Configuring model context window for agentic tools...")
-    
+
     # First, check if the base model is already pulled
     try:
         result = subprocess.run([OLLAMA_EXECUTABLE_PATH, "list"], capture_output=True, text=True, check=True)
@@ -129,9 +129,9 @@ def setup_model_context_window():
 
     # Create extended context variant using interactive Ollama REPL
     print(f"-> Creating '{MODEL_NAME_WITH_CTX}' with num_ctx={CONTEXT_WINDOW}...")
-    
+
     ollama_commands = f"/set parameter num_ctx {CONTEXT_WINDOW}\n/save {MODEL_NAME_WITH_CTX}\n/bye\n"
-    
+
     try:
         process = subprocess.Popen(
             [OLLAMA_EXECUTABLE_PATH, "run", MODEL_NAME],
@@ -141,7 +141,7 @@ def setup_model_context_window():
             text=True
         )
         stdout, stderr = process.communicate(input=ollama_commands, timeout=120)
-        
+
         if process.returncode == 0 or "Created new model" in stdout:
             print(f"✅ Successfully created model variant '{MODEL_NAME_WITH_CTX}'")
             return MODEL_NAME_WITH_CTX
@@ -167,7 +167,7 @@ def pull_model_if_missing():
 def setup_cloudflared():
     """Checks for cloudflared binary locally, downloads only if missing."""
     print("[3/5] Deploying secure tunnel gateway...")
-    
+
     if os.path.exists(CLOUDFLARED_PATH) and os.access(CLOUDFLARED_PATH, os.X_OK):
         print("✅ Valid local 'cloudflared' binary found. Skipping download.")
         return
@@ -186,11 +186,11 @@ def generate_opencode_config(public_url, effective_model):
     """
     Generates the opencode.json configuration file following p-lemonish reference.
     Minimal, clean config with tools enabled for extended-context models.
-    
+
     Reference: https://github.com/p-lemonish/ollama-x-opencode
     """
     print("[5/5] Generating OpenCode configuration...")
-    
+
     # Clean config format (matching p-lemonish reference)
     config_data = {
         "$schema": "https://opencode.ai/config.json",
@@ -208,7 +208,7 @@ def generate_opencode_config(public_url, effective_model):
             }
         }
     }
-    
+
     try:
         file_path = "opencode.json"
         with open(file_path, "w", encoding="utf-8") as f:
@@ -231,9 +231,9 @@ def main():
     # Start Ollama service in the background
     print("-> Starting Ollama server background process...")
     ollama_proc = subprocess.Popen(
-        [OLLAMA_EXECUTABLE_PATH, "serve"], 
-        env=ollama_env, 
-        stdout=subprocess.DEVNULL, 
+        [OLLAMA_EXECUTABLE_PATH, "serve"],
+        env=ollama_env,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
     time.sleep(4)  # Give server a moment to bind to the port
@@ -253,11 +253,11 @@ def main():
     try:
         for attempt in range(max_retries):
             print(f"-> Attempting Cloudflare tunnel connection (Attempt {attempt + 1}/{max_retries})...")
-            
+
             tunnel_proc = subprocess.Popen(
                 [CLOUDFLARED_PATH, "tunnel", "--url", f"http://localhost:{OLLAMA_PORT}"],
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT, 
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True
             )
 
