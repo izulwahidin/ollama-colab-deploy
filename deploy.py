@@ -8,7 +8,8 @@ import sys
 import shutil
 
 # --- CONFIGURATION (Optimized for Colab T4 Free Tier) ---
-MODEL_NAME = "qwen3.6:35b-a3b-q4_K_M"  # Elite MoE model optimized for 15GB VRAM architectures
+MODEL_NAME = "gemma4:e4b"  # Elite MoE model optimized for 15GB VRAM architectures
+NUM_CTX = 32768            # Context window size allocation
 OLLAMA_PORT = "11434"
 OLLAMA_HOST = f"0.0.0.0:{OLLAMA_PORT}"
 OLLAMA_EXECUTABLE_PATH = "/usr/local/bin/ollama"
@@ -141,7 +142,8 @@ def generate_opencode_config(public_url):
                 },
                 "models": {
                     MODEL_NAME: {
-                        "tools": True
+                        "tools": True,
+                        "tool_call": True,
                     }
                 }
             }
@@ -162,9 +164,10 @@ def main():
     # 1. Environment & Framework Setup
     prepare_dependencies()
 
-    # Configure environment variables for running the service
+    # Configure environment variables for running the service with manual 32k context default
     ollama_env = os.environ.copy()
     ollama_env["OLLAMA_HOST"] = OLLAMA_HOST
+    ollama_env["OLLAMA_CONTEXT_LENGTH"] = str(NUM_CTX)  # Safely inject the context configuration variable
     ollama_env["PATH"] = f"{ollama_env.get('PATH', '')}:/usr/local/bin"
 
     # Start Ollama service in the background
@@ -211,7 +214,7 @@ def main():
                     if match:
                         public_url = match.group(0)
                         break
-            
+
             if public_url:
                 print(f"\n🚀 BACKEND LIVE: {public_url}")
                 break
@@ -235,7 +238,7 @@ def main():
         print("✨ Setup Complete! System exposed cleanly using base model specifications.")
         print("="*60)
         print("\nKeep this cell running to maintain the live tunnel proxy.")
-        
+
         # Keep loop responsive to notebook interrupts
         while True:
             time.sleep(1)
